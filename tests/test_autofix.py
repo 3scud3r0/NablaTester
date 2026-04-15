@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from bugsuite.autofix import cascade_autofix
+from nablatester.autofix import cascade_autofix
 
 
 def test_cascade_autofix_clones_project_applies_actions_and_streams(tmp_path: Path) -> None:
@@ -17,7 +17,7 @@ def test_cascade_autofix_clones_project_applies_actions_and_streams(tmp_path: Pa
         encoding="utf-8",
     )
 
-    target = tmp_path / "source_project_bugsuite_fixed"
+    target = tmp_path / "source_project_nablatester_fixed"
     stream = target / "cascade_stream.jsonl"
 
     fixed_path, summary, actions = cascade_autofix(
@@ -37,5 +37,5 @@ def test_cascade_autofix_clones_project_applies_actions_and_streams(tmp_path: Pa
     assert "os.getenv('API_KEY', '')" in fixed_code
     assert "TODO" not in fixed_code
 
-    assert (fixed_path / "bugsuite_report.pdf").exists()
+    assert (fixed_path / "nablatester_report.pdf").exists()
     assert len(summary.findings) >= 0

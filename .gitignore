@@ -4,6 +4,6 @@ __pycache__/
 dist/
 build/
 *.spec
-bugsuite_report.pdf
-sample_projects/**/bugsuite_report.pdf
-*_bugsuite_fixed/
+nablatester_report.pdf
+sample_projects/**/nablatester_report.pdf
+*_nablatester_fixed/

@@ -1,0 +1,23 @@
+{
+  "dangerous_calls": [
+    "eval",
+    "exec"
+  ],
+  "taint_sources": [
+    "input",
+    "sys.argv",
+    "os.environ.get"
+  ],
+  "taint_sinks": [
+    "subprocess.run",
+    "subprocess.Popen",
+    "os.system",
+    "sqlite3.execute"
+  ],
+  "sanitizers": [
+    "shlex.quote",
+    "int",
+    "float",
+    "re.escape"
+  ]
+}

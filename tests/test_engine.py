@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from bugsuite.engine import run_analysis
+from nablatester.engine import run_analysis
 
 
 def test_run_analysis_detects_findings_and_writes_pdf(tmp_path: Path) -> None:
@@ -15,7 +15,7 @@ def test_run_analysis_detects_findings_and_writes_pdf(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    output = project / "bugsuite_report.pdf"
+    output = project / "nablatester_report.pdf"
     summary = run_analysis(project, output)
 
     assert summary.scanned_files == 1
