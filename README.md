@@ -34,6 +34,12 @@ nablatester --gui
 
 Se o ambiente não suportar GUI, o programa cai automaticamente para modo texto.
 
+### UX/UI (desktop) aprimorada
+- Interface em abas (**Execução** e **Runtime**).
+- Barra de progresso com percentual e ETA.
+- Botão Start com lock de execução (evita duplo clique concorrente).
+- Controles avançados de autofix + quality gate estrito.
+
 Na GUI você pode marcar **Ativar correção determinística em cascata** para:
 - copiar a base original para uma pasta derivada (`*_nablatester_fixed`);
 - editar arquivos em cascata com regras determinísticas;
@@ -50,6 +56,25 @@ Opcionalmente:
 
 ```bash
 nablatester /caminho/do/projeto --output /tmp/meu_relatorio.pdf --no-interactive
+```
+
+Relatórios adicionais:
+
+```bash
+nablatester /caminho/do/projeto \
+  --workers 4 \
+  --sarif-output /tmp/nablatester.sarif \
+  --json-output /tmp/nablatester.json \
+  --no-interactive
+```
+
+Modo baseline (ignorar achados conhecidos):
+
+```bash
+nablatester /caminho/do/projeto \
+  --baseline-in /tmp/nablatester_baseline.json \
+  --baseline-out /tmp/nablatester_baseline_nova.json \
+  --no-interactive
 ```
 
 ## Correção determinística em cascata (sem LLM)
@@ -82,8 +107,12 @@ Esta versão evolui de detecção por texto para uma base de análise estática 
 - **Análise semântica Python via AST**:
   - chamadas perigosas por regra (`dangerous_calls`);
   - análise de contaminação source -> sink (`taint_sources`/`taint_sinks`/`sanitizers`);
+  - heurística de SQL injection para `execute()` com f-string;
+  - análise interprocedural básica (caller -> callee) para fluxo contaminado;
+  - controle de escopo para reduzir falso positivo de taint entre funções;
   - uso de variável antes de atribuição em escopo de função;
   - marcadores TODO/FIXME/HACK via tokenização de comentários (evita falso positivo em identificadores).
+- **Cobertura semântica inicial para JavaScript/TypeScript** em padrões críticos (`eval`, `child_process.exec/execSync`).
 - **Autofix em cascata com invariância sintática**:
   - pré-compila código candidato antes de salvar;
   - rollback automático se a modificação quebrar sintaxe;

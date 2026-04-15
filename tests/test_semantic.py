@@ -21,3 +21,15 @@ def test_taint_to_sink_detection(tmp_path: Path) -> None:
     findings = analyze_file(file_path)
     bug_types = {f.bug_type for f in findings}
     assert "security/taint-to-sink" in bug_types
+
+
+def test_sql_injection_heuristic_for_fstring_execute(tmp_path: Path) -> None:
+    file_path = tmp_path / "sql.py"
+    file_path.write_text(
+        "def q(cursor, user):\n"
+        "    cursor.execute(f\"SELECT * FROM users WHERE id = {user}\")\n",
+        encoding="utf-8",
+    )
+    findings = analyze_file(file_path)
+    bug_types = {f.bug_type for f in findings}
+    assert "security/sql-injection-heuristic" in bug_types

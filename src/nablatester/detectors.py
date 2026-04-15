@@ -37,6 +37,22 @@ def _call_name(node: ast.AST) -> str | None:
     return None
 
 
+def _matches_call(target: str | None, patterns: set[str]) -> bool:
+    if not target:
+        return False
+    if target in patterns:
+        return True
+    tail = target.split(".")[-1]
+    for pattern in patterns:
+        if pattern == tail:
+            return True
+        if pattern.startswith("*.") and tail == pattern[2:]:
+            return True
+        if pattern.endswith(".*") and target.startswith(pattern[:-2]):
+            return True
+    return False
+
+
 def detect_secrets(file_path: Path, lines: list[str]) -> list[BugFinding]:
     findings: list[BugFinding] = []
     for idx, line in enumerate(lines, start=1):
@@ -112,19 +128,10 @@ def detect_python_semantic_issues(file_path: Path, code: str, rules: dict) -> li
     taint_sinks = set(rules.get("taint_sinks", []))
     sanitizers = set(rules.get("sanitizers", []))
 
-    tainted_vars: set[str] = set()
-
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            call = _call_name(node.value.func)
-            if call in taint_sources:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        tainted_vars.add(target.id)
-
         if isinstance(node, ast.Call):
             call = _call_name(node.func)
-            if call in dangerous:
+            if _matches_call(call, dangerous):
                 findings.append(
                     BugFinding(
                         file_path=file_path,
@@ -140,24 +147,6 @@ def detect_python_semantic_issues(file_path: Path, code: str, rules: dict) -> li
                         combined_debug_note="Consolide auditoria de entradas não confiáveis em todos os módulos antes de liberar patch final.",
                     )
                 )
-
-            if call in taint_sinks:
-                if _call_uses_tainted(node, tainted_vars, sanitizers):
-                    findings.append(
-                        BugFinding(
-                            file_path=file_path,
-                            line=getattr(node, "lineno", 1),
-                            bug_type="security/taint-to-sink",
-                            severity="critical",
-                            description=f"Fluxo contaminado alcança sink perigoso ({call}) sem sanitização.",
-                            debug_steps=[
-                                "Mapeie source -> variáveis intermediárias -> sink.",
-                                "Aplique sanitização/validação antes do sink.",
-                                "Crie teste negativo com payload malicioso.",
-                            ],
-                            combined_debug_note="Mitigue fluxos críticos primeiro e revalide caminhos dependentes.",
-                        )
-                    )
 
         if isinstance(node, ast.Assert):
             findings.append(
@@ -177,6 +166,8 @@ def detect_python_semantic_issues(file_path: Path, code: str, rules: dict) -> li
             )
 
     findings.extend(_detect_use_before_assign(file_path, tree))
+    findings.extend(_detect_module_scoped_taint(file_path, tree, taint_sources, taint_sinks, sanitizers))
+    findings.extend(_detect_function_scoped_taint(file_path, tree, taint_sources, taint_sinks, sanitizers))
 
     for idx, line in enumerate(code.splitlines(), start=1):
         if SUBPROCESS_SHELL_PATTERN.search(line):
@@ -205,7 +196,7 @@ def _call_uses_tainted(node: ast.Call, tainted_vars: set[str], sanitizers: set[s
             return True
         if isinstance(arg, ast.Call):
             nested = _call_name(arg.func)
-            if nested in sanitizers:
+            if _matches_call(nested, sanitizers):
                 continue
             if any(isinstance(a, ast.Name) and a.id in tainted_vars for a in arg.args):
                 return True
@@ -250,4 +241,159 @@ def _detect_use_before_assign(file_path: Path, tree: ast.AST) -> list[BugFinding
                         combined_debug_note="Corrija ordem de inicialização antes de tratar falhas derivadas.",
                     )
                 )
+    return findings
+
+
+def _detect_function_scoped_taint(
+    file_path: Path,
+    tree: ast.AST,
+    taint_sources: set[str],
+    taint_sinks: set[str],
+    sanitizers: set[str],
+) -> list[BugFinding]:
+    findings: list[BugFinding] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+
+        tainted_vars: set[str] = set()
+        for stmt in ast.walk(node):
+            if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+                call = _call_name(stmt.value.func)
+                if _matches_call(call, taint_sources):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            tainted_vars.add(target.id)
+                elif _matches_call(call, sanitizers):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name) and target.id in tainted_vars:
+                            tainted_vars.discard(target.id)
+
+            if isinstance(stmt, ast.Call):
+                call = _call_name(stmt.func)
+                if _matches_call(call, taint_sinks) and _call_uses_tainted(stmt, tainted_vars, sanitizers):
+                    findings.append(
+                        BugFinding(
+                            file_path=file_path,
+                            line=getattr(stmt, "lineno", 1),
+                            bug_type="security/taint-to-sink",
+                            severity="critical",
+                            description=f"Fluxo contaminado alcança sink perigoso ({call}) sem sanitização no escopo da função {node.name}.",
+                            debug_steps=[
+                                "Mapeie source -> variáveis intermediárias -> sink no mesmo escopo.",
+                                "Aplique sanitização/validação antes do sink.",
+                                "Crie teste negativo com payload malicioso.",
+                            ],
+                            combined_debug_note="Mitigue fluxos críticos primeiro e revalide caminhos dependentes.",
+                        )
+                    )
+    return findings
+
+
+def _detect_module_scoped_taint(
+    file_path: Path,
+    tree: ast.AST,
+    taint_sources: set[str],
+    taint_sinks: set[str],
+    sanitizers: set[str],
+) -> list[BugFinding]:
+    findings: list[BugFinding] = []
+    tainted_vars: set[str] = set()
+
+    for stmt in getattr(tree, "body", []):
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+            call = _call_name(stmt.value.func)
+            if _matches_call(call, taint_sources):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        tainted_vars.add(target.id)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            call = _call_name(stmt.value.func)
+            if _matches_call(call, taint_sinks) and _call_uses_tainted(stmt.value, tainted_vars, sanitizers):
+                findings.append(
+                    BugFinding(
+                        file_path=file_path,
+                        line=getattr(stmt, "lineno", 1),
+                        bug_type="security/taint-to-sink",
+                        severity="critical",
+                        description=f"Fluxo contaminado em escopo de módulo alcança sink perigoso ({call}) sem sanitização.",
+                        debug_steps=[
+                            "Mapeie source -> variáveis intermediárias -> sink no escopo global.",
+                            "Aplique sanitização/validação antes do sink.",
+                            "Crie teste negativo com payload malicioso.",
+                        ],
+                        combined_debug_note="Mitigue fluxos críticos primeiro e revalide caminhos dependentes.",
+                    )
+                )
+    return findings
+
+
+def detect_javascript_semantic_issues(file_path: Path, lines: list[str]) -> list[BugFinding]:
+    findings: list[BugFinding] = []
+    for idx, line in enumerate(lines, start=1):
+        if re.search(r"\beval\s*\(", line):
+            findings.append(
+                BugFinding(
+                    file_path=file_path,
+                    line=idx,
+                    bug_type="security/js-eval",
+                    severity="high",
+                    description="Uso de eval() em JavaScript pode executar código arbitrário.",
+                    debug_steps=[
+                        "Substitua eval por parser/dispatch seguro.",
+                        "Valide estritamente entradas externas.",
+                    ],
+                    combined_debug_note="Priorize remoção de eval e APIs equivalentes antes de rollout.",
+                )
+            )
+        if re.search(r"child_process\.(exec|execSync)\s*\(", line):
+            findings.append(
+                BugFinding(
+                    file_path=file_path,
+                    line=idx,
+                    bug_type="security/js-command-injection",
+                    severity="high",
+                    description="Uso de child_process.exec/execSync aumenta risco de command injection.",
+                    debug_steps=[
+                        "Prefira spawn/execFile com lista de argumentos.",
+                        "Sanitize/escape entradas externas.",
+                    ],
+                    combined_debug_note="Padronize execução de comandos JS com wrappers seguros.",
+                )
+            )
+    return findings
+
+
+def detect_python_sql_injection_heuristics(file_path: Path, code: str) -> list[BugFinding]:
+    findings: list[BugFinding] = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call = _call_name(node.func)
+        if not call or not call.endswith("execute"):
+            continue
+        if not node.args:
+            continue
+        first_arg = node.args[0]
+        if isinstance(first_arg, ast.JoinedStr):
+            findings.append(
+                BugFinding(
+                    file_path=file_path,
+                    line=getattr(node, "lineno", 1),
+                    bug_type="security/sql-injection-heuristic",
+                    severity="high",
+                    description="Query SQL com f-string detectada em execute(); potencial SQL injection.",
+                    debug_steps=[
+                        "Substitua por query parametrizada com placeholders.",
+                        "Evite concatenação/f-string para montar SQL.",
+                    ],
+                    combined_debug_note="Padronize camada de acesso a dados com queries parametrizadas.",
+                )
+            )
     return findings

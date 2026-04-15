@@ -72,11 +72,14 @@ def _sort_import_block(lines: list[str]) -> None:
 def _fix_python_lines(lines: list[str], findings: Iterable[BugFinding]) -> tuple[list[str], list[tuple[int, str]]]:
     line_actions: list[tuple[int, str]] = []
     line_to_types: dict[int, set[str]] = {}
+    line_to_findings: dict[int, list[BugFinding]] = {}
     for f in findings:
         line_to_types.setdefault(f.line, set()).add(f.bug_type)
+        line_to_findings.setdefault(f.line, []).append(f)
 
     needs_ast_import = False
     needs_os_import = False
+    insertions: list[tuple[int, str]] = []
 
     for line_no, bug_types in sorted(line_to_types.items()):
         if line_no <= 0 or line_no > len(lines):
@@ -114,6 +117,21 @@ def _fix_python_lines(lines: list[str], findings: Iterable[BugFinding]) -> tuple
             new_line = re.sub(r"\b(TODO|FIXME|HACK)\b", "NOTE", new_line, flags=re.IGNORECASE)
             line_actions.append((line_no, "Normalizado marcador de dívida técnica para NOTE."))
 
+        if "reliability/use-before-assign" in bug_types:
+            for finding in line_to_findings.get(line_no, []):
+                match = re.search(r"Variável '([^']+)'", finding.description)
+                if not match:
+                    continue
+                var_name = match.group(1)
+                if var_name in {"eval", "exec", "print", "input", "len", "str", "int", "float"}:
+                    continue
+                if not new_line.lstrip().startswith(var_name):
+                    continue
+                indent = new_line[: len(new_line) - len(new_line.lstrip(" "))]
+                insertion = f"{indent}{var_name} = None  # inicialização automática NablaTester"
+                insertions.append((line_no - 1, insertion))
+                line_actions.append((line_no, f"Inicialização preventiva inserida para variável '{var_name}' usada antes de atribuição."))
+
         if "security/secret-leak" in bug_types and _line_match_secret(new_line):
             env_name = _env_name_from_line(new_line)
             new_line = re.sub(r"(['\"])[^'\"]{6,}\1", f"os.getenv('{env_name}', '')", new_line, count=1)
@@ -126,6 +144,9 @@ def _fix_python_lines(lines: list[str], findings: Iterable[BugFinding]) -> tuple
         lines = _ensure_import(lines, "import ast")
     if needs_os_import:
         lines = _ensure_import(lines, "import os")
+
+    for index, content in sorted(insertions, key=lambda x: x[0], reverse=True):
+        lines.insert(max(0, index), content)
 
     return lines, line_actions
 

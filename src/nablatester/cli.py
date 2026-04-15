@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .autofix import cascade_autofix
 from .engine import run_analysis
 from .gui import launch_gui
+from .sarif_writer import write_sarif
 
 
 def interactive_mode() -> None:
@@ -45,6 +47,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict-gate", action="store_true", help="Ativa quality gate e rollback automático por iteração")
     parser.add_argument("--gate-cmd", action="append", help="Comando de quality gate (pode repetir)")
     parser.add_argument("--no-rollback-on-gate-fail", action="store_true", help="Não reverte alterações quando quality gate falhar")
+    parser.add_argument("--workers", type=int, default=1, help="Número de workers paralelos para análise")
+    parser.add_argument("--sarif-output", help="Gera relatório SARIF no caminho indicado")
+    parser.add_argument("--json-output", help="Gera relatório JSON estruturado no caminho indicado")
+    parser.add_argument("--baseline-in", help="Arquivo JSON com fingerprints para ignorar")
+    parser.add_argument("--baseline-out", help="Arquivo JSON para salvar fingerprints encontrados")
     return parser
 
 
@@ -90,7 +97,20 @@ def main() -> None:
         return
 
     output = Path(args.output).expanduser().resolve() if args.output else (project / "nablatester_report.pdf")
-    summary = run_analysis(project, output)
+    ignore_fingerprints: set[str] | None = None
+    if args.baseline_in:
+        baseline_path = Path(args.baseline_in).expanduser().resolve()
+        data = json.loads(baseline_path.read_text(encoding="utf-8"))
+        ignore_fingerprints = set(data.get("fingerprints", [])) if isinstance(data, dict) else set()
+
+    summary = run_analysis(project, output, workers=max(1, args.workers), ignore_fingerprints=ignore_fingerprints)
+    if args.sarif_output:
+        write_sarif(summary, Path(args.sarif_output).expanduser().resolve())
+    if args.json_output:
+        Path(args.json_output).expanduser().resolve().write_text(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.baseline_out:
+        payload = {"fingerprints": sorted({f.fingerprint for f in summary.findings})}
+        Path(args.baseline_out).expanduser().resolve().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Concluído. Bugs={len(summary.findings)} PDF={output}")
 
 
